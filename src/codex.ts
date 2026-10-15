@@ -144,34 +144,81 @@ function buildSpawn(bin: string, args: string[]): { cmd: string; args: string[];
   return { cmd: bin, args, opts: {} };
 }
 
+/** Kill `pid` and every descendant. POSIX: the child is a process-group leader (`detached`), so `-pid` signals the group. */
 function killTree(pid: number | undefined) {
-  if (!pid) return;
+  if (!pid || pid <= 0) return;
   try {
-    if (isWin) spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true });
-    else process.kill(pid, "SIGKILL");
-  } catch { /* already gone */ }
+    if (isWin) {
+      spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true });
+      return;
+    }
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
+  }
 }
 
 interface Spawned { code: number | null; stdout: string; stderr: string }
 
+/** After a timeout kill, how long to wait for codex to exit before reporting the timeout anyway. */
+const KILL_GRACE_MS = 5_000;
+
 /** Run codex without a shell, feeding `input` on stdin, and kill it if it runs past the timeout. */
 async function spawnCodex(bin: string, args: string[], o: { cwd: string; input: string; timeoutMs: number }): Promise<Spawned> {
   const s = buildSpawn(bin, args);
-  const child = spawn(s.cmd, s.args, { cwd: o.cwd, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, shell: false, ...s.opts });
+  const child = spawn(s.cmd, s.args, {
+    cwd: o.cwd, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, shell: false, ...s.opts,
+    // New process group on POSIX so a timeout can signal descendants, not just this pid. Windows uses taskkill /T.
+    detached: !isWin,
+  });
   let stdout = "", stderr = "";
   child.stdout.on("data", (d) => { stdout = (stdout + d).slice(-20_000); });
   child.stderr.on("data", (d) => { stderr = (stderr + d).slice(-20_000); });
   child.stdin.on("error", () => { /* child exited early; reported below */ });
   child.stdin.end(o.input, "utf8");
   const code = await new Promise<number | null>((resolve, reject) => {
-    const t = setTimeout(() => { killTree(child.pid); reject(new CodexError(`Codex did not finish within ${Math.round(o.timeoutMs / 1000)}s. Raise the timeout setting or send a shorter document.`, "TIMEOUT")); }, o.timeoutMs);
-    child.on("error", (e) => { clearTimeout(t); reject(new CodexError(`Failed to start codex (${bin}): ${e.message}`, "NOT_FOUND")); });
-    child.on("close", (c) => { clearTimeout(t); resolve(c); });
+    let settled = false;
+    let timedOut = false;
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn();
+    };
+    const timeout = () => finish(() => reject(new CodexError(`Codex did not finish within ${Math.round(o.timeoutMs / 1000)}s. Raise the timeout setting or send a shorter document.`, "TIMEOUT")));
+    const timer = setTimeout(() => {
+      timedOut = true;
+      const exited = child.exitCode !== null || child.signalCode !== null;
+      killTree(child.pid);
+      // Settle once codex itself has exited: callers remove the work directory in a `finally`, which must run after
+      // that. Don't wait for `close`, because a descendant outside the process group can hold the pipes open
+      // indefinitely. The grace timer bounds a kill that didn't take.
+      if (exited) timeout();
+      else setTimeout(timeout, KILL_GRACE_MS).unref();
+    }, o.timeoutMs);
+    child.on("error", (e) => finish(() => reject(new CodexError(`Failed to start codex (${bin}): ${e.message}`, "NOT_FOUND"))));
+    child.on("exit", () => { if (timedOut) timeout(); });
+    child.on("close", (c) => (timedOut ? timeout() : finish(() => resolve(c))));
   });
   return { code, stdout, stderr };
 }
 
-const LOGIN_RE = /not logged in|please (run )?`?codex login|login required|unauthori[sz]ed|\b401\b|authenticat/i;
+// Explicit sign-in failures and auth status lines, checked per output line.
+// Not substrings: "authentication_cache" and a bare "401" in some other diagnostic are not sign-in failures.
+const LOGIN_RE = new RegExp([
+  "\\bnot logged in\\b",
+  "\\blogin required\\b",
+  "\\bplease(?:\\s+run)?\\s+`?codex login\\b",
+  "\\bunauthori[sz]ed\\b",
+  "\\bauthentication (?:failed|error|required)\\b",
+  "\\bfailed to authenticate\\b",
+  "\\berror:\\s*401\\b",
+  "\\b401\\s+unauthori[sz]ed\\b",
+  "\\bhttp\\s+401\\b",
+  "\\bstatus(?:\\s+code)?\\s*[:=]\\s*401\\b",
+  "\"status\"\\s*:\\s*401\\b",
+].join("|"), "i");
+const isLoginFailure = (detail: string) => detail.split(/\r?\n/).some((line) => LOGIN_RE.test(line));
 const SANDBOX_RE = /sandbox (setup|error|failed|denied|is not (set ?up|available|supported))|failed to (create|apply|initiali[sz]e) (the )?sandbox|windows sandbox|CreateRestrictedToken|CreateProcessAsUser/i;
 const MODEL_RE = /model is not supported|model\b[^\n]{0,80}\b(not found|does not exist|not available)/i;
 const SETTINGS_RE = /error loading (rules|config)|starlark error|failed to (load|parse) (config|rules)|config\.toml:\d+/i;
@@ -205,7 +252,7 @@ export async function runCodex(prompt: string, cfg: Config = loadConfig()): Prom
     const out = existsSync(outFile) ? readFileSync(outFile, "utf8").trim() : "";
     if (code !== 0 || !out) {
       const detail = (stderr || stdout).trim().split(/\r?\n/).filter((l) => l.trim() && !isNoise(l)).slice(-8).join("\n");
-      if (LOGIN_RE.test(detail)) throw new CodexError("Codex is not signed in. Run `codex login` in a terminal (choose \"Sign in with ChatGPT\"), then try again.", "NOT_LOGGED_IN");
+      if (isLoginFailure(detail)) throw new CodexError("Codex is not signed in. Run `codex login` in a terminal (choose \"Sign in with ChatGPT\"), then try again.", "NOT_LOGGED_IN");
       if (SANDBOX_RE.test(detail)) throw new CodexError(`Codex couldn't start its read-only sandbox. Open the ChatGPT app in Codex mode (or run \`codex\` in a terminal) once to finish its setup, then try again.\n${detail}`, "SANDBOX");
       if (MODEL_RE.test(detail)) throw new CodexError(`The model Codex is set to use isn't available with your ChatGPT sign-in. Set this extension's Model setting to one your plan supports, or change \`model\` in your Codex config.toml.\n${detail}`, "CONFIG");
       if (SETTINGS_RE.test(detail)) throw new CodexError(`Codex couldn't load its own settings. Fix the file named below (in your .codex folder), then try again. This also affects Codex on its own, outside Claude.\n${detail}`, "CONFIG");
