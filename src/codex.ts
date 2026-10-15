@@ -160,6 +160,9 @@ function killTree(pid: number | undefined) {
 
 interface Spawned { code: number | null; stdout: string; stderr: string }
 
+/** After a timeout kill, how long to wait for codex to exit before reporting the timeout anyway. */
+const KILL_GRACE_MS = 5_000;
+
 /** Run codex without a shell, feeding `input` on stdin, and kill it if it runs past the timeout. */
 async function spawnCodex(bin: string, args: string[], o: { cwd: string; input: string; timeoutMs: number }): Promise<Spawned> {
   const s = buildSpawn(bin, args);
@@ -182,16 +185,20 @@ async function spawnCodex(bin: string, args: string[], o: { cwd: string; input: 
       clearTimeout(timer);
       fn();
     };
+    const timeout = () => finish(() => reject(new CodexError(`Codex did not finish within ${Math.round(o.timeoutMs / 1000)}s. Raise the timeout setting or send a shorter document.`, "TIMEOUT")));
     const timer = setTimeout(() => {
       timedOut = true;
+      const exited = child.exitCode !== null || child.signalCode !== null;
       killTree(child.pid);
-      // Do not reject yet. Callers remove the work directory in a `finally`, which must run only after exit.
+      // Settle once codex itself has exited: callers remove the work directory in a `finally`, which must run after
+      // that. Don't wait for `close`, because a descendant outside the process group can hold the pipes open
+      // indefinitely. The grace timer bounds a kill that didn't take.
+      if (exited) timeout();
+      else setTimeout(timeout, KILL_GRACE_MS).unref();
     }, o.timeoutMs);
     child.on("error", (e) => finish(() => reject(new CodexError(`Failed to start codex (${bin}): ${e.message}`, "NOT_FOUND"))));
-    child.on("close", (c) => finish(() => {
-      if (timedOut) reject(new CodexError(`Codex did not finish within ${Math.round(o.timeoutMs / 1000)}s. Raise the timeout setting or send a shorter document.`, "TIMEOUT"));
-      else resolve(c);
-    }));
+    child.on("exit", () => { if (timedOut) timeout(); });
+    child.on("close", (c) => (timedOut ? timeout() : finish(() => resolve(c))));
   });
   return { code, stdout, stderr };
 }

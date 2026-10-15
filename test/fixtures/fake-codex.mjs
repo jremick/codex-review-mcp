@@ -21,14 +21,24 @@ function hang() {
   return setInterval(() => {}, 1000);
 }
 
+// Leave a descendant in its own process group that holds stderr open, as an MCP server Codex starts might.
+// A process-group kill misses it on POSIX. It exits by itself after 20s.
+function escape() {
+  const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 20000)"], { detached: true, stdio: ["ignore", "ignore", "inherit"], windowsHide: true });
+  const pidFile = process.env.FAKE_CODEX_PIDFILE;
+  if (pidFile) writeFileSync(pidFile, JSON.stringify({ pid: process.pid, childPid: child.pid, cwd: process.cwd() }));
+  return setInterval(() => {}, 1000);
+}
+
 // Record the process tree at startup so a timeout test can observe it before the kill.
 if (mode === "hang") hang();
+if (mode === "escape") escape();
 
 let input = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (d) => (input += d));
 process.stdin.on("end", () => {
-  if (mode === "hang") return;
+  if (mode === "hang" || mode === "escape") return;
   if (mode === "notloggedin") { process.stderr.write("Error: Not logged in. Please run `codex login`.\n"); process.exit(1); }
   if (mode === "authcache") { process.stderr.write("Error loading config: authentication_cache has invalid type\n"); process.exit(1); }
   if (mode === "stray401") { process.stderr.write("Error: windows sandbox setup failed: diagnostic reference 401\n"); process.exit(1); }

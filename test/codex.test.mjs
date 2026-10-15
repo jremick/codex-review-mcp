@@ -143,6 +143,32 @@ test("timeout kills the process tree and removes the work dir only after exit", 
   }
 });
 
+test("timeout settles when a descendant outside the process group keeps the pipes open", { timeout: 20_000 }, async () => {
+  const scratch = mkdtempSync(join(tmpdir(), "crm-test-"));
+  const pidFile = join(scratch, "pids.json");
+  const prev = { mode: process.env.FAKE_CODEX_MODE, pid: process.env.FAKE_CODEX_PIDFILE };
+  process.env.FAKE_CODEX_MODE = "escape";
+  process.env.FAKE_CODEX_PIDFILE = pidFile;
+  const before = tempDirs();
+  let state;
+  try {
+    const started = Date.now();
+    const pending = runCodex("hi", cfg({ timeoutMs: 1500 }));
+    state = await readJson(pidFile);
+    await assert.rejects(pending, (e) => e instanceof CodexError && e.code === "TIMEOUT");
+    // Settled on codex's own exit, well before the 5s kill-grace backstop would fire (1.5s + 5s).
+    assert.ok(Date.now() - started < 5_500, `took ${Date.now() - started}ms`);
+    assert.equal(dead(state.pid), true, "timeout settled before codex was reaped");
+    assert.equal(tempDirs(), before);
+  } finally {
+    killPid(state?.pid);
+    killPid(state?.childPid);
+    if (prev.mode === undefined) delete process.env.FAKE_CODEX_MODE; else process.env.FAKE_CODEX_MODE = prev.mode;
+    if (prev.pid === undefined) delete process.env.FAKE_CODEX_PIDFILE; else process.env.FAKE_CODEX_PIDFILE = prev.pid;
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
 test("codex --version is read for the setup check", async () => {
   assert.equal(await codexVersion(fakeCodex), "codex-cli 0.0.0-fake");
 });
