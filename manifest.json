@@ -2,12 +2,13 @@
   "manifest_version": "0.3",
   "name": "codex-review-mcp",
   "display_name": "ChatGPT Review (via Codex)",
-  "version": "0.1.0",
-  "description": "Ask ChatGPT for a second-opinion review of a document, using your own ChatGPT subscription through the Codex CLI.",
-  "long_description": "Adds two tools to Claude: chatgpt_review (review a document, with optional focus and rubric) and chatgpt_ask. Requests run through the OpenAI Codex CLI in a read-only sandbox and use your ChatGPT plan; no API key is needed. Document text is sent to OpenAI.",
+  "version": "0.2.0",
+  "description": "Have ChatGPT review Claude's drafts as your editor, using your own ChatGPT subscription through the Codex CLI.",
+  "long_description": "Adds ChatGPT review to Claude. chatgpt_review sends a document to ChatGPT, which reviews it with your editor instructions file if you set one and ends with VERDICT: READY or VERDICT: REVISE. The Write a paper prompt runs the whole loop: Claude drafts, ChatGPT edits, Claude revises, up to two rounds. Long reviews come back as a job ID that chatgpt_result collects, so they don't time out. chatgpt_check tests the setup. Requests run through the OpenAI Codex CLI in a read-only sandbox on your ChatGPT plan; no API key is needed. Document text is sent to OpenAI.",
   "author": { "name": "Jarel Remick", "url": "https://github.com/jremick" },
+  "repository": { "type": "git", "url": "https://github.com/jremick/codex-review-mcp" },
   "license": "MIT",
-  "keywords": ["chatgpt", "codex", "review", "openai"],
+  "keywords": ["chatgpt", "codex", "review", "editor", "openai"],
   "server": {
     "type": "node",
     "entry_point": "dist/index.js",
@@ -16,18 +17,25 @@
       "args": ["${__dirname}/dist/index.js"],
       "env": {
         "CODEX_PATH": "${user_config.codex_path}",
+        "CODEX_REVIEW_INSTRUCTIONS": "${user_config.instructions_file}",
+        "CODEX_REVIEW_EFFORT": "${user_config.effort}",
         "CODEX_REVIEW_TIMEOUT_MS": "${user_config.timeout_ms}",
         "CODEX_REVIEW_MODEL": "${user_config.model}"
       }
     }
   },
   "tools": [
-    { "name": "chatgpt_review", "description": "Send a document to ChatGPT for an independent review." },
-    { "name": "chatgpt_ask", "description": "Ask ChatGPT a question, optionally with context." }
+    { "name": "chatgpt_review", "description": "Send a document to ChatGPT for review, using your editor instructions if set." },
+    { "name": "chatgpt_ask", "description": "Ask ChatGPT a question, optionally with context." },
+    { "name": "chatgpt_result", "description": "Collect a long-running review or answer by its job ID." },
+    { "name": "chatgpt_check", "description": "Check that Codex is installed, signed in and can answer." }
   ],
+  "prompts_generated": true,
   "user_config": {
-    "codex_path": { "type": "file", "title": "Codex executable (optional)", "description": "Leave blank to auto-detect. Set this if Claude can't find codex (for example C:\\Users\\you\\AppData\\Roaming\\npm\\codex.cmd or /opt/homebrew/bin/codex).", "required": false },
-    "timeout_ms": { "type": "number", "title": "Timeout (ms)", "description": "How long to wait for ChatGPT before giving up.", "default": 300000, "min": 30000, "max": 1800000, "required": false },
+    "instructions_file": { "type": "file", "title": "Editor instructions file (recommended)", "description": "A text or Markdown file with your ChatGPT editor instructions, for example your editor skill. ChatGPT reviews as that editor. Leave blank to use the built-in reviewer.", "required": false },
+    "effort": { "type": "string", "title": "Reasoning effort", "description": "How hard ChatGPT thinks: low, medium (default), high or xhigh. Higher is slower. Type default to use your Codex setting.", "default": "medium", "required": false },
+    "codex_path": { "type": "file", "title": "Codex executable (optional)", "description": "Leave blank to auto-detect. Set this if Claude can't find codex (for example C:\\Users\\you\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\codex.exe or /opt/homebrew/bin/codex).", "required": false },
+    "timeout_ms": { "type": "number", "title": "Timeout (ms)", "description": "How long one review may run before it's stopped.", "default": 600000, "min": 30000, "max": 1800000, "required": false },
     "model": { "type": "string", "title": "Model (optional)", "description": "Override the Codex model. Leave blank for your Codex default.", "required": false }
   },
   "compatibility": { "platforms": ["darwin", "win32", "linux"], "runtimes": { "node": ">=18.17.0" } }

@@ -1,7 +1,7 @@
 {
   "name": "codex-review-mcp",
-  "version": "0.1.0",
-  "description": "MCP server that lets Claude Desktop send documents to ChatGPT (via the Codex CLI) for a second-opinion review.",
+  "version": "0.2.0",
+  "description": "MCP server that lets Claude Desktop have ChatGPT (via the Codex CLI) review drafts as your editor.",
   "license": "MIT",
   "private": true,
   "type": "module",
