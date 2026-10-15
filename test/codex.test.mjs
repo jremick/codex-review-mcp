@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CodexError, codexArgs, codexVersion, loadConfig, loadInstructions, resolveCodex, runCodex } from "../dist/codex.js";
@@ -11,6 +11,19 @@ const cfg = (o = {}) => ({ ...loadConfig({}), codexPath: fakeCodex, timeoutMs: 2
 const withMode = async (mode, fn) => { const p = process.env.FAKE_CODEX_MODE; process.env.FAKE_CODEX_MODE = mode; try { return await fn(); } finally { if (p === undefined) delete process.env.FAKE_CODEX_MODE; else process.env.FAKE_CODEX_MODE = p; } };
 const tempDirs = () => readdirSync(tmpdir()).filter((n) => n.startsWith("codex-review-")).length;
 const tempFile = (name, text) => { const d = mkdtempSync(join(tmpdir(), "crm-test-")); const f = join(d, name); writeFileSync(f, text); return { f, cleanup: () => rmSync(d, { recursive: true, force: true }) }; };
+const dead = (pid) => { try { process.kill(pid, 0); return false; } catch { return true; } };
+const killPid = (pid) => { if (pid) try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } };
+const readJson = async (file) => {
+  const start = Date.now();
+  for (;;) {
+    try { return JSON.parse(readFileSync(file, "utf8")); }
+    catch (e) {
+      if (e?.code !== "ENOENT" && !(e instanceof SyntaxError)) throw e;
+      if (Date.now() - start > 2_000) throw new Error(`timed out waiting for ${file}`);
+      await new Promise((r) => setTimeout(r, 20));
+    }
+  }
+};
 
 test("loadConfig defaults and overrides", () => {
   const d = loadConfig({});
@@ -66,6 +79,15 @@ test("large input survives stdin", async () => {
 test("not logged in is detected", () => withMode("notloggedin", () =>
   assert.rejects(runCodex("hi", cfg()), (e) => e.code === "NOT_LOGGED_IN" && /codex login/.test(e.message))));
 
+test("authentication_cache, a stray 401, and 'Authentication succeeded' are not sign-in failures", async () => {
+  await withMode("authcache", () => assert.rejects(runCodex("hi", cfg()), (e) => e.code === "CONFIG" && /authentication_cache/.test(e.message) && !/not signed in/.test(e.message)));
+  await withMode("stray401", () => assert.rejects(runCodex("hi", cfg()), (e) => e.code === "SANDBOX" && /reference 401/.test(e.message) && !/not signed in/.test(e.message)));
+  await withMode("authbenign", () => assert.rejects(runCodex("hi", cfg()), (e) => e.code === "FAILED" && /Authentication succeeded/.test(e.message) && !/not signed in/.test(e.message)));
+});
+
+test("an explicit 401 Unauthorized status is a sign-in failure", () => withMode("unauthorized", () =>
+  assert.rejects(runCodex("hi", cfg()), (e) => e.code === "NOT_LOGGED_IN" && /codex login/.test(e.message))));
+
 test("sandbox setup failure is detected", () => withMode("sandbox", () =>
   assert.rejects(runCodex("hi", cfg()), (e) => e.code === "SANDBOX" && /Codex mode/.test(e.message))));
 
@@ -84,6 +106,42 @@ test("timeout kills codex and cleans up", () => withMode("hang", async () => {
   await new Promise((r) => setTimeout(r, 300));
   assert.equal(tempDirs(), before);
 }));
+
+test("timeout kills the process tree and removes the work dir only after exit", async () => {
+  const scratch = mkdtempSync(join(tmpdir(), "crm-test-"));
+  const pidFile = join(scratch, "pids.json");
+  const raceFile = join(scratch, "race");
+  const prev = { mode: process.env.FAKE_CODEX_MODE, pid: process.env.FAKE_CODEX_PIDFILE, race: process.env.FAKE_CODEX_RACEFILE };
+  process.env.FAKE_CODEX_MODE = "hang";
+  process.env.FAKE_CODEX_PIDFILE = pidFile;
+  process.env.FAKE_CODEX_RACEFILE = raceFile;
+  const before = tempDirs();
+  let state;
+  try {
+    const pending = runCodex("hi", cfg({ timeoutMs: 1500 }));
+    state = await readJson(pidFile);
+    assert.equal(typeof state.childPid, "number");
+    assert.notEqual(state.childPid, state.pid);
+    assert.equal(dead(state.pid), false);
+    assert.equal(dead(state.childPid), false);
+    assert.equal(existsSync(state.cwd), true);
+    await assert.rejects(pending, (e) => e instanceof CodexError && e.code === "TIMEOUT");
+    // Settling means the direct process was reaped; cleanup has already removed the work dir.
+    assert.equal(dead(state.pid), true, "timeout settled before codex was reaped");
+    assert.equal(existsSync(state.cwd), false);
+    assert.equal(tempDirs(), before);
+    await new Promise((r) => setTimeout(r, 150));
+    assert.equal(dead(state.childPid), true, "descendant survived the timeout");
+    assert.equal(existsSync(raceFile), false, "work dir was removed while a descendant was still running");
+  } finally {
+    killPid(state?.pid);
+    killPid(state?.childPid);
+    if (prev.mode === undefined) delete process.env.FAKE_CODEX_MODE; else process.env.FAKE_CODEX_MODE = prev.mode;
+    if (prev.pid === undefined) delete process.env.FAKE_CODEX_PIDFILE; else process.env.FAKE_CODEX_PIDFILE = prev.pid;
+    if (prev.race === undefined) delete process.env.FAKE_CODEX_RACEFILE; else process.env.FAKE_CODEX_RACEFILE = prev.race;
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
 
 test("codex --version is read for the setup check", async () => {
   assert.equal(await codexVersion(fakeCodex), "codex-cli 0.0.0-fake");
