@@ -1,0 +1,34 @@
+{
+  "manifest_version": "0.3",
+  "name": "codex-review-mcp",
+  "display_name": "ChatGPT Review (via Codex)",
+  "version": "0.1.0",
+  "description": "Ask ChatGPT for a second-opinion review of a document, using your own ChatGPT subscription through the Codex CLI.",
+  "long_description": "Adds two tools to Claude: chatgpt_review (review a document, with optional focus and rubric) and chatgpt_ask. Requests run through the OpenAI Codex CLI in a read-only sandbox and use your ChatGPT plan; no API key is needed. Document text is sent to OpenAI.",
+  "author": { "name": "Jarel Remick", "url": "https://github.com/jremick" },
+  "license": "MIT",
+  "keywords": ["chatgpt", "codex", "review", "openai"],
+  "server": {
+    "type": "node",
+    "entry_point": "dist/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/dist/index.js"],
+      "env": {
+        "CODEX_PATH": "${user_config.codex_path}",
+        "CODEX_REVIEW_TIMEOUT_MS": "${user_config.timeout_ms}",
+        "CODEX_REVIEW_MODEL": "${user_config.model}"
+      }
+    }
+  },
+  "tools": [
+    { "name": "chatgpt_review", "description": "Send a document to ChatGPT for an independent review." },
+    { "name": "chatgpt_ask", "description": "Ask ChatGPT a question, optionally with context." }
+  ],
+  "user_config": {
+    "codex_path": { "type": "file", "title": "Codex executable (optional)", "description": "Leave blank to auto-detect. Set this if Claude can't find codex (for example C:\\Users\\you\\AppData\\Roaming\\npm\\codex.cmd or /opt/homebrew/bin/codex).", "required": false },
+    "timeout_ms": { "type": "number", "title": "Timeout (ms)", "description": "How long to wait for ChatGPT before giving up.", "default": 300000, "min": 30000, "max": 1800000, "required": false },
+    "model": { "type": "string", "title": "Model (optional)", "description": "Override the Codex model. Leave blank for your Codex default.", "required": false }
+  },
+  "compatibility": { "platforms": ["darwin", "win32", "linux"], "runtimes": { "node": ">=18.17.0" } }
+}

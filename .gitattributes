@@ -1,0 +1,2 @@
+*.cmd text eol=crlf
+test/fixtures/codex text eol=lf

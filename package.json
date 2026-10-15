@@ -1,0 +1,27 @@
+{
+  "name": "codex-review-mcp",
+  "version": "0.1.0",
+  "description": "MCP server that lets Claude Desktop send documents to ChatGPT (via the Codex CLI) for a second-opinion review.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "bin": { "codex-review-mcp": "dist/index.js" },
+  "main": "dist/index.js",
+  "files": ["dist", "README.md", "LICENSE"],
+  "engines": { "node": ">=18.17" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test --test-concurrency=1 test/codex.test.mjs test/server.test.mjs",
+    "e2e": "npm run build && node scripts/e2e.mjs",
+    "pack:mcpb": "npm run build && node scripts/pack-mcpb.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@anthropic-ai/mcpb": "^2.1.2",
+    "@types/node": "^20.14.0",
+    "typescript": "^5.6.0"
+  }
+}
