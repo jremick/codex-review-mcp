@@ -173,6 +173,10 @@ async function spawnCodex(bin: string, args: string[], o: { cwd: string; input: 
 
 const LOGIN_RE = /not logged in|please (run )?`?codex login|login required|unauthori[sz]ed|\b401\b|authenticat/i;
 const SANDBOX_RE = /sandbox (setup|error|failed|denied|is not (set ?up|available|supported))|failed to (create|apply|initiali[sz]e) (the )?sandbox|windows sandbox|CreateRestrictedToken|CreateProcessAsUser/i;
+const MODEL_RE = /model is not supported|model\b[^\n]{0,80}\b(not found|does not exist|not available)/i;
+const SETTINGS_RE = /error loading (rules|config)|starlark error|failed to (load|parse) (config|rules)|config\.toml:\d+/i;
+// Codex also starts the user's own MCP servers; their connection errors (rmcp) are noise here, and can contain "401".
+const isNoise = (line: string) => /rmcp::|^\s*(warning|deprecated|user \(|enable it with)/i.test(line);
 
 /** The codex arguments for one read-only, non-interactive turn. Exported for tests. */
 export function codexArgs(cfg: Config, work: string, outFile: string): string[] {
@@ -200,9 +204,11 @@ export async function runCodex(prompt: string, cfg: Config = loadConfig()): Prom
     const { code, stdout, stderr } = await spawnCodex(bin, codexArgs(cfg, work, outFile), { cwd: work, input: prompt, timeoutMs: cfg.timeoutMs });
     const out = existsSync(outFile) ? readFileSync(outFile, "utf8").trim() : "";
     if (code !== 0 || !out) {
-      const detail = (stderr || stdout).trim().split(/\r?\n/).slice(-8).join("\n");
+      const detail = (stderr || stdout).trim().split(/\r?\n/).filter((l) => l.trim() && !isNoise(l)).slice(-8).join("\n");
       if (LOGIN_RE.test(detail)) throw new CodexError("Codex is not signed in. Run `codex login` in a terminal (choose \"Sign in with ChatGPT\"), then try again.", "NOT_LOGGED_IN");
       if (SANDBOX_RE.test(detail)) throw new CodexError(`Codex couldn't start its read-only sandbox. Open the ChatGPT app in Codex mode (or run \`codex\` in a terminal) once to finish its setup, then try again.\n${detail}`, "SANDBOX");
+      if (MODEL_RE.test(detail)) throw new CodexError(`The model Codex is set to use isn't available with your ChatGPT sign-in. Set this extension's Model setting to one your plan supports, or change \`model\` in your Codex config.toml.\n${detail}`, "CONFIG");
+      if (SETTINGS_RE.test(detail)) throw new CodexError(`Codex couldn't load its own settings. Fix the file named below (in your .codex folder), then try again. This also affects Codex on its own, outside Claude.\n${detail}`, "CONFIG");
       throw new CodexError(`Codex exited with code ${code}${out ? "" : " and no answer"}.${detail ? `\n${detail}` : ""}`, "FAILED");
     }
     return { text: out, durationMs: Date.now() - started };

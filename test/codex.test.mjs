@@ -69,6 +69,12 @@ test("not logged in is detected", () => withMode("notloggedin", () =>
 test("sandbox setup failure is detected", () => withMode("sandbox", () =>
   assert.rejects(runCodex("hi", cfg()), (e) => e.code === "SANDBOX" && /Codex mode/.test(e.message))));
 
+test("an unsupported model is a CONFIG error, and MCP-server 401 noise isn't mistaken for sign-in", () => withMode("badmodel", () =>
+  assert.rejects(runCodex("hi", cfg()), (e) => e.code === "CONFIG" && /Model setting/.test(e.message) && !/rmcp/.test(e.message))));
+
+test("a broken Codex settings file is a CONFIG error naming the file", () => withMode("badrules", () =>
+  assert.rejects(runCodex("hi", cfg()), (e) => e.code === "CONFIG" && /own settings/.test(e.message) && /default\.rules:1/.test(e.message))));
+
 test("a plain 'sandbox: read-only' banner is not mistaken for a sandbox failure", () => withMode("fail", () =>
   assert.rejects(runCodex("hi", cfg()), (e) => e.code === "FAILED" && /model exploded/.test(e.message))));
 

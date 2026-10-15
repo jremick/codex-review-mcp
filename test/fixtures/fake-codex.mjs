@@ -10,6 +10,12 @@ process.stdin.on("end", () => {
   if (mode === "hang") return setInterval(() => {}, 1000);
   if (mode === "notloggedin") { process.stderr.write("Error: Not logged in. Please run `codex login`.\n"); process.exit(1); }
   if (mode === "sandbox") { process.stderr.write("sandbox: read-only\nError: windows sandbox setup failed: access denied\n"); process.exit(1); }
+  if (mode === "badmodel") {
+    process.stderr.write('2026-10-15T05:02:06Z ERROR rmcp::transport::worker: worker quit with fatal: HTTP 401 Unauthorized\n');
+    process.stderr.write(`ERROR: {"type":"error","status":400,"error":{"message":"The 'gpt-x' model is not supported when using Codex with a ChatGPT account."}}\n`);
+    process.exit(1);
+  }
+  if (mode === "badrules") { process.stderr.write("Error loading rules:\nC:\\Users\\me\\.codex\\rules\\default.rules:1: starlark error: error: Parse error: invalid string escape sequence `Us`\n"); process.exit(1); }
   if (mode === "fail") { process.stderr.write("sandbox: read-only\nboom: model exploded\n"); process.exit(3); }
   const write = () => {
     const out = args[args.indexOf("--output-last-message") + 1];

@@ -132,6 +132,8 @@ What Anthropic's documentation says (checked October 2026):
 | *Could not find the Codex CLI* | Do [step 1](#1-install-codex-and-sign-in), then fully quit and reopen Claude. If it still fails, set **Codex executable** to its full path. Run `where codex` (Windows) or `which codex` (Mac) to find it. The standalone Windows installer puts it in `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin\codex.exe`. |
 | *Codex is not signed in* | Run `codex login` in PowerShell or Terminal. |
 | *Codex couldn't start its read-only sandbox* | Open the ChatGPT app in Codex mode, or run `codex` in PowerShell, and give it any small task once. That finishes Codex's setup. Then try again. |
+| *The model Codex is set to use isn't available with your ChatGPT sign-in* | Codex's own settings ask for a model your plan doesn't offer. Set the extension's **Model** setting to one it does, or change `model` in your Codex `config.toml`. Updating Codex can also help. |
+| *Codex couldn't load its own settings* | A file in your `.codex` folder has an error, and Codex fails outside Claude too. The message names the file and line. A common cause on Windows is a path written with single backslashes (`C:\Users\…`) inside quotes in `.codex\rules\default.rules`; change them to forward slashes (`C:/Users/…`). |
 | *The editor instructions file … can't be read* or *is empty* | Fix the path in the extension's settings, or fill in the file. |
 | *did not finish within …* | Raise **Timeout**, lower **Reasoning effort**, or send less text. |
 | Tools or the prompt don't appear | Fully quit and restart Claude. Check **Settings → Extensions** that the extension is on. |
