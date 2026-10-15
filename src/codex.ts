@@ -1,37 +1,67 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { delimiter, dirname, join } from "node:path";
+import { basename, delimiter, dirname, join } from "node:path";
+
+export type CodexErrorCode = "NOT_FOUND" | "NOT_LOGGED_IN" | "SANDBOX" | "TIMEOUT" | "TOO_LARGE" | "CONFIG" | "FAILED";
 
 export class CodexError extends Error {
-  constructor(message: string, public readonly code: "NOT_FOUND" | "NOT_LOGGED_IN" | "TIMEOUT" | "TOO_LARGE" | "FAILED") {
+  constructor(message: string, public readonly code: CodexErrorCode) {
     super(message);
   }
 }
 
 const isWin = process.platform === "win32";
 
+export const EFFORTS = ["minimal", "low", "medium", "high", "xhigh"] as const;
+
 export interface Config {
   codexPath?: string;
   timeoutMs: number;
+  waitMs: number;
   maxChars: number;
   model?: string;
+  effort?: string;
+  instructionsFile?: string;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
-  const num = (v: string | undefined, d: number) => {
-    const n = Number(v);
-    return v && Number.isFinite(n) && n > 0 ? n : d;
-  };
   // Unfilled .mcpb placeholders arrive as literal "${user_config.x}"; treat them as unset.
   const str = (v: string | undefined) => { const t = v?.trim(); return t && !t.startsWith("${") ? t : undefined; };
-  env = { ...env, CODEX_PATH: str(env.CODEX_PATH), CODEX_REVIEW_TIMEOUT_MS: str(env.CODEX_REVIEW_TIMEOUT_MS), CODEX_REVIEW_MODEL: str(env.CODEX_REVIEW_MODEL) };
-  return {
-    codexPath: env.CODEX_PATH,
-    timeoutMs: num(env.CODEX_REVIEW_TIMEOUT_MS, 5 * 60_000),
-    maxChars: num(env.CODEX_REVIEW_MAX_CHARS, 200_000),
-    model: env.CODEX_REVIEW_MODEL?.trim() || undefined,
+  const num = (v: string | undefined, d: number) => {
+    const s = str(v);
+    const n = Number(s);
+    return s && Number.isFinite(n) && n > 0 ? n : d;
   };
+  // "default" leaves the effort to the user's own Codex config.
+  const effort = str(env.CODEX_REVIEW_EFFORT)?.toLowerCase() ?? "medium";
+  return {
+    codexPath: str(env.CODEX_PATH),
+    timeoutMs: num(env.CODEX_REVIEW_TIMEOUT_MS, 10 * 60_000),
+    waitMs: num(env.CODEX_REVIEW_WAIT_MS, 45_000),
+    maxChars: num(env.CODEX_REVIEW_MAX_CHARS, 200_000),
+    model: str(env.CODEX_REVIEW_MODEL),
+    effort: effort === "default" ? undefined : effort,
+    instructionsFile: str(env.CODEX_REVIEW_INSTRUCTIONS),
+  };
+}
+
+export interface Instructions { name: string; text: string }
+
+/** Read the editor instructions file, if one is set. A file that is set but unusable is an error, never a silent fallback. */
+export function loadInstructions(cfg: Config): Instructions | undefined {
+  const file = cfg.instructionsFile;
+  if (!file) return undefined;
+  let raw: string;
+  try {
+    raw = readFileSync(file, "utf8");
+  } catch {
+    throw new CodexError(`The editor instructions file "${file}" can't be read. Check the path in the extension's settings, or clear it to use the built-in reviewer.`, "CONFIG");
+  }
+  // Skill files start with YAML front matter (name, description); the reviewer only needs the body.
+  const text = raw.replace(/^﻿/, "").replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "").trim();
+  if (!text) throw new CodexError(`The editor instructions file "${file}" is empty. Paste your editor instructions into it, or clear the setting.`, "CONFIG");
+  return { name: basename(file), text };
 }
 
 const isFile = (p: string) => {
@@ -44,7 +74,10 @@ function extraDirs(env: NodeJS.ProcessEnv): string[] {
   if (isWin) {
     const appData = env.APPDATA ?? join(home, "AppData", "Roaming");
     const local = env.LOCALAPPDATA ?? join(home, "AppData", "Local");
-    return [join(appData, "npm"), join(local, "Programs", "codex"), join(home, ".local", "bin"), join(home, "scoop", "shims")];
+    return [
+      join(local, "Programs", "OpenAI", "Codex", "bin"), // OpenAI's standalone installer (install.ps1)
+      join(appData, "npm"), join(local, "Microsoft", "WinGet", "Links"), join(home, ".local", "bin"), join(home, "scoop", "shims"),
+    ];
   }
   return [
     "/opt/homebrew/bin", "/usr/local/bin", join(home, ".local", "bin"), join(home, ".npm-global", "bin"),
@@ -87,8 +120,8 @@ export function resolveCodex(cfg: Config, env: NodeJS.ProcessEnv = process.env):
     }
   }
   throw new CodexError(
-    "Could not find the Codex CLI. Install it with `npm install -g @openai/codex`, run `codex login`, " +
-      "or set CODEX_PATH to the full path of the codex executable.",
+    "Could not find the Codex CLI. Install it (see the README), run `codex login`, " +
+      "or set the Codex executable setting to the full path of codex.",
     "NOT_FOUND",
   );
 }
@@ -119,7 +152,41 @@ function killTree(pid: number | undefined) {
   } catch { /* already gone */ }
 }
 
-const LOGIN_RE = /not logged in|please (run )?`?codex login|login required|unauthori[sz]ed|401|authenticat/i;
+interface Spawned { code: number | null; stdout: string; stderr: string }
+
+/** Run codex without a shell, feeding `input` on stdin, and kill it if it runs past the timeout. */
+async function spawnCodex(bin: string, args: string[], o: { cwd: string; input: string; timeoutMs: number }): Promise<Spawned> {
+  const s = buildSpawn(bin, args);
+  const child = spawn(s.cmd, s.args, { cwd: o.cwd, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, shell: false, ...s.opts });
+  let stdout = "", stderr = "";
+  child.stdout.on("data", (d) => { stdout = (stdout + d).slice(-20_000); });
+  child.stderr.on("data", (d) => { stderr = (stderr + d).slice(-20_000); });
+  child.stdin.on("error", () => { /* child exited early; reported below */ });
+  child.stdin.end(o.input, "utf8");
+  const code = await new Promise<number | null>((resolve, reject) => {
+    const t = setTimeout(() => { killTree(child.pid); reject(new CodexError(`Codex did not finish within ${Math.round(o.timeoutMs / 1000)}s. Raise the timeout setting or send a shorter document.`, "TIMEOUT")); }, o.timeoutMs);
+    child.on("error", (e) => { clearTimeout(t); reject(new CodexError(`Failed to start codex (${bin}): ${e.message}`, "NOT_FOUND")); });
+    child.on("close", (c) => { clearTimeout(t); resolve(c); });
+  });
+  return { code, stdout, stderr };
+}
+
+const LOGIN_RE = /not logged in|please (run )?`?codex login|login required|unauthori[sz]ed|\b401\b|authenticat/i;
+const SANDBOX_RE = /sandbox (setup|error|failed|denied|is not (set ?up|available|supported))|failed to (create|apply|initiali[sz]e) (the )?sandbox|windows sandbox|CreateRestrictedToken|CreateProcessAsUser/i;
+
+/** The codex arguments for one read-only, non-interactive turn. Exported for tests. */
+export function codexArgs(cfg: Config, work: string, outFile: string): string[] {
+  if (cfg.effort && !(EFFORTS as readonly string[]).includes(cfg.effort)) {
+    throw new CodexError(`Reasoning effort "${cfg.effort}" isn't one of ${EFFORTS.join(", ")}.`, "CONFIG");
+  }
+  return [
+    "exec", "--skip-git-repo-check", "--sandbox", "read-only", "--ephemeral", "--color", "never",
+    "-C", work, "--output-last-message", outFile,
+    ...(cfg.model ? ["--model", cfg.model] : []),
+    ...(cfg.effort ? ["-c", `model_reasoning_effort=${cfg.effort}`] : []),
+    "-",
+  ];
+}
 
 export interface RunResult { text: string; durationMs: number }
 
@@ -130,30 +197,12 @@ export async function runCodex(prompt: string, cfg: Config = loadConfig()): Prom
   const outFile = join(work, "last-message.md");
   const started = Date.now();
   try {
-    const args = [
-      "exec", "--skip-git-repo-check", "--sandbox", "read-only", "--ephemeral", "--color", "never",
-      "-C", work, "--output-last-message", outFile,
-      ...(cfg.model ? ["--model", cfg.model] : []),
-      "-",
-    ];
-    const s = buildSpawn(bin, args);
-    const child = spawn(s.cmd, s.args, { cwd: work, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, shell: false, ...s.opts });
-    let stdout = "", stderr = "";
-    child.stdout.on("data", (d) => { stdout = (stdout + d).slice(-20_000); });
-    child.stderr.on("data", (d) => { stderr = (stderr + d).slice(-20_000); });
-    child.stdin.on("error", () => { /* child exited early; reported below */ });
-    child.stdin.end(prompt, "utf8");
-
-    const code = await new Promise<number | null>((resolve, reject) => {
-      const t = setTimeout(() => { killTree(child.pid); reject(new CodexError(`Codex did not finish within ${Math.round(cfg.timeoutMs / 1000)}s. Raise CODEX_REVIEW_TIMEOUT_MS or send a shorter document.`, "TIMEOUT")); }, cfg.timeoutMs);
-      child.on("error", (e) => { clearTimeout(t); reject(new CodexError(`Failed to start codex (${bin}): ${e.message}`, "NOT_FOUND")); });
-      child.on("close", (c) => { clearTimeout(t); resolve(c); });
-    });
-
+    const { code, stdout, stderr } = await spawnCodex(bin, codexArgs(cfg, work, outFile), { cwd: work, input: prompt, timeoutMs: cfg.timeoutMs });
     const out = existsSync(outFile) ? readFileSync(outFile, "utf8").trim() : "";
     if (code !== 0 || !out) {
       const detail = (stderr || stdout).trim().split(/\r?\n/).slice(-8).join("\n");
       if (LOGIN_RE.test(detail)) throw new CodexError("Codex is not signed in. Run `codex login` in a terminal (choose \"Sign in with ChatGPT\"), then try again.", "NOT_LOGGED_IN");
+      if (SANDBOX_RE.test(detail)) throw new CodexError(`Codex couldn't start its read-only sandbox. Open the ChatGPT app in Codex mode (or run \`codex\` in a terminal) once to finish its setup, then try again.\n${detail}`, "SANDBOX");
       throw new CodexError(`Codex exited with code ${code}${out ? "" : " and no answer"}.${detail ? `\n${detail}` : ""}`, "FAILED");
     }
     return { text: out, durationMs: Date.now() - started };
@@ -162,3 +211,15 @@ export async function runCodex(prompt: string, cfg: Config = loadConfig()): Prom
   }
 }
 
+/** `codex --version`, for the setup check. */
+export async function codexVersion(bin: string): Promise<string> {
+  const work = mkdtempSync(join(tmpdir(), "codex-review-"));
+  try {
+    const { code, stdout, stderr } = await spawnCodex(bin, ["--version"], { cwd: work, input: "", timeoutMs: 30_000 });
+    const v = (stdout || stderr).trim().split(/\r?\n/)[0] ?? "";
+    if (code !== 0 || !v) throw new CodexError(`\`codex --version\` failed (exit code ${code}).`, "FAILED");
+    return v;
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+}
