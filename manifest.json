@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "codex-review-mcp",
   "display_name": "ChatGPT Review (via Codex)",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Have ChatGPT review Claude's drafts as your editor, using your own ChatGPT subscription through the Codex CLI.",
   "long_description": "Adds ChatGPT review to Claude. chatgpt_review sends a document to ChatGPT, which reviews it with your editor instructions file if you set one and ends with VERDICT: READY or VERDICT: REVISE. The Write a paper prompt runs the whole loop: Claude drafts, ChatGPT edits, Claude revises, up to two rounds. Long reviews come back as a job ID that chatgpt_result collects, so they don't time out. chatgpt_check tests the setup. Requests run through the OpenAI Codex CLI in a read-only sandbox on your ChatGPT plan; no API key is needed. Document text is sent to OpenAI.",
   "author": { "name": "Jarel Remick", "url": "https://github.com/jremick" },

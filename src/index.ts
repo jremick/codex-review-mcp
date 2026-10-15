@@ -6,7 +6,7 @@ import { CodexError, type Config, codexVersion, loadConfig, loadInstructions, re
 import { Jobs, type Settled } from "./jobs.js";
 import { CHECK_PROMPT, askPrompt, paperPrompt, reviewPrompt } from "./prompts.js";
 
-const server = new McpServer({ name: "codex-review-mcp", version: "0.2.0" });
+const server = new McpServer({ name: "codex-review-mcp", version: "0.2.1" });
 const jobs = new Jobs();
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
