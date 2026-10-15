@@ -213,8 +213,13 @@ export async function runCodex(prompt: string, cfg: Config = loadConfig()): Prom
     }
     return { text: out, durationMs: Date.now() - started };
   } finally {
-    rmSync(work, { recursive: true, force: true });
+    removeWorkDir(work);
   }
+}
+
+/** On Windows a just-exited process can hold the folder briefly; retry, and never fail a finished review over cleanup. */
+function removeWorkDir(work: string) {
+  try { rmSync(work, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { /* left in the OS temp folder */ }
 }
 
 /** `codex --version`, for the setup check. */
@@ -226,6 +231,6 @@ export async function codexVersion(bin: string): Promise<string> {
     if (code !== 0 || !v) throw new CodexError(`\`codex --version\` failed (exit code ${code}).`, "FAILED");
     return v;
   } finally {
-    rmSync(work, { recursive: true, force: true });
+    removeWorkDir(work);
   }
 }
