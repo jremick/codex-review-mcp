@@ -23,5 +23,6 @@
     "@anthropic-ai/mcpb": "^2.1.2",
     "@types/node": "^20.14.0",
     "typescript": "^5.6.0"
-  }
+  },
+  "overrides": { "tmp": "^0.2.6" }
 }
