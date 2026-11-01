@@ -16,6 +16,33 @@ async function connect(env = {}) {
 const body = (r) => r.content[0].text;
 const fake = (r) => JSON.parse(body(r).replace(/^Editor instructions: .*\n\n/, ""));
 
+test("zod 4 tool schemas stay objects, and empty required strings are rejected", async () => {
+  const c = await connect();
+  try {
+    const tools = Object.fromEntries((await c.listTools()).tools.map((t) => [t.name, t.inputSchema]));
+    assert.equal(tools.chatgpt_review.type, "object");
+    assert.equal(tools.chatgpt_review.properties.document.type, "string");
+    assert.equal(tools.chatgpt_review.properties.document.minLength, 1);
+    assert.match(tools.chatgpt_review.properties.document.description, /document to review/);
+    assert.equal(tools.chatgpt_review.properties.focus.type, "string");
+    assert.equal(tools.chatgpt_review.properties.focus.minLength, undefined);
+    assert.deepEqual(tools.chatgpt_review.required, ["document"]);
+    assert.deepEqual(tools.chatgpt_ask.required, ["question"]);
+    assert.equal(tools.chatgpt_ask.properties.question.minLength, 1);
+    assert.equal(tools.chatgpt_ask.properties.context.minLength, undefined);
+    assert.deepEqual(tools.chatgpt_result.required, ["job_id"]);
+    assert.deepEqual(tools.chatgpt_check.properties, {});
+    const prompt = (await c.listPrompts()).prompts.find((p) => p.name === "write_paper");
+    assert.deepEqual(prompt.arguments.map((a) => [a.name, a.required]), [["brief", true], ["rounds", false]]);
+    const bad = await c.callTool({ name: "chatgpt_review", arguments: { document: "" } });
+    assert.equal(bad.isError, true);
+    assert.match(body(bad), /Too small/);
+    const omitted = await c.callTool({ name: "chatgpt_review", arguments: { document: "Draft only" } });
+    assert.ok(!omitted.isError);
+    assert.doesNotMatch(fake(omitted).stdinHead, /Focus especially/);
+  } finally { await c.close(); }
+});
+
 test("lists the tools and the paper prompt; reviews via MCP", async () => {
   const c = await connect();
   try {
